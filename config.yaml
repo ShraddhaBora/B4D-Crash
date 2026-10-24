@@ -1,0 +1,65 @@
+# Before the Crash — Central Configuration
+# All thresholds are configurable here; no magic numbers in source code.
+
+video:
+  input_path: ""          # set at runtime or via experiment config
+  output_dir: "outputs"
+  frame_skip: 1           # process every Nth frame (1 = every frame)
+  resize_width: 1280      # resize width; 0 = no resize
+
+detector:
+  model: "yolov8n.pt"     # yolov8n | yolov8s | yolov8m | yolov8l | yolov8x
+  confidence: 0.30
+  iou: 0.50
+  classes:
+    - 0   # person
+    - 2   # car
+    - 3   # motorcycle
+    - 5   # bus
+    - 7   # truck
+
+tracker:
+  name: "bytetrack"
+  track_high_thresh: 0.50
+  track_low_thresh: 0.10
+  new_track_thresh: 0.60
+  track_buffer: 30
+
+trajectory:
+  smoothing_window: 5     # frames; odd number preferred for Savitzky-Golay
+  min_track_length: 10    # frames; shorter tracks are flagged SHORT
+  max_gap: 5              # frames; larger gaps flagged FRAGMENTED
+  max_speed_pixels: 300   # px/s; faster tracks flagged IMPLAUSIBLE
+
+interaction:
+  max_candidate_distance: 150   # pixels between foot-points to consider as candidate
+  prediction_horizon: 3.0       # seconds; used for path-projection TTC estimation
+
+safety:
+  ttc_threshold: 3.0            # seconds; below this is a potential conflict
+  pet_threshold: 2.0            # seconds; below this is a potential conflict
+  speed_change_threshold: 0.35  # fraction; |Δspeed/speed| above this = evasive
+  heading_change_threshold: 25.0  # degrees; above this per-step = evasive turn
+
+events:
+  merge_window: 2.0       # seconds; repeated alerts within window merged into one event
+  minimum_duration: 0.2   # seconds; shorter events are dropped as noise
+
+hotspots:
+  grid_size: 5            # number of grid cells per axis for spatial aggregation
+  minimum_events: 2       # minimum events for a hotspot to be reported
+
+calibration:
+  enabled: false
+  image_points: []        # [[x,y], ...] in image coordinates
+  world_points: []        # [[x,y], ...] in metric ground-plane coordinates
+
+logging:
+  level: "INFO"           # DEBUG | INFO | WARNING | ERROR
+  log_file: "experiments/logs/pipeline.log"
+
+risk_weights:
+  ttc: 0.35
+  pet: 0.30
+  evasive: 0.20
+  vulnerability: 0.15     # penalty multiplier for pedestrian/cyclist involvement

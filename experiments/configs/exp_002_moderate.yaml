@@ -1,0 +1,13 @@
+# Experiment 2 — Moderate (balanced precision/recall)
+experiment_id: exp_002
+description: "Moderate thresholds — balanced baseline"
+
+safety:
+  ttc_threshold: 3.0
+  pet_threshold: 2.0
+  speed_change_threshold: 0.35
+  heading_change_threshold: 25.0
+
+events:
+  merge_window: 2.0
+  minimum_duration: 0.2

@@ -1,0 +1,13 @@
+# Experiment 3 — Sensitive (higher recall, accepts more false positives)
+experiment_id: exp_003
+description: "Sensitive thresholds — high recall priority"
+
+safety:
+  ttc_threshold: 5.0
+  pet_threshold: 3.0
+  speed_change_threshold: 0.20
+  heading_change_threshold: 15.0
+
+events:
+  merge_window: 1.0
+  minimum_duration: 0.1

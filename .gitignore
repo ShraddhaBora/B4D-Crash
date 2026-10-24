@@ -1,0 +1,47 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+
+# Environments
+.env
+.venv
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+
+# Data — never commit raw video or large datasets
+data/raw/
+data/processed/
+data/samples/*.mp4
+data/samples/*.avi
+data/samples/*.mov
+
+# Model weights — download them; don't commit
+models/checkpoints/*.pt
+models/checkpoints/*.pth
+
+# Testing & Cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Outputs — generated artifacts
+outputs/*
+!outputs/.gitkeep
+
+# Experiment results (keep configs, not huge result files)
+experiments/results/
+experiments/logs/*.log
+
+# Kaggle API credentials
+kaggle.json
