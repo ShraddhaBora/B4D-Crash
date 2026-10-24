@@ -296,3 +296,96 @@ def test_agent37_dynamic_config():
     cfg_text = generate_next_config(best_low_prec, df)
 
     assert "ttc_threshold: 2.7" in cfg_text or "Precision-constrained" in cfg_text
+
+
+# ── Fix #7: Motorcycle interaction classification ────────────────────────────
+def test_motorcycle_classification():
+    from src.safety.candidate_pairs import interaction_type
+
+    # Motorcycle with vehicles -> VEH_MOTO (distinct from VEH_PED and VEH_VEH)
+    assert interaction_type("car", "motorcycle") == "VEH_MOTO"
+    assert interaction_type("motorcycle", "truck") == "VEH_MOTO"
+    assert interaction_type("bus", "motorcycle") == "VEH_MOTO"
+    assert interaction_type("motorcycle", "motorcycle") == "VEH_MOTO"
+
+    # Pedestrian/person interactions -> VEH_PED
+    assert interaction_type("person", "car") == "VEH_PED"
+    assert interaction_type("car", "person") == "VEH_PED"
+    assert interaction_type("person", "motorcycle") == "VEH_PED"
+    assert interaction_type("bicycle", "car") == "VEH_PED"
+
+    # Vehicle-to-vehicle interactions -> VEH_VEH
+    assert interaction_type("car", "car") == "VEH_VEH"
+    assert interaction_type("car", "truck") == "VEH_VEH"
+    assert interaction_type("bus", "truck") == "VEH_VEH"
+
+
+# ── Fix #2 & #3: Temporal sampling & EventManager aggregation ────────────────
+def test_pipeline_temporal_sampling_integration():
+    from src.events.event_manager import EventManager
+    from src.schema import ConflictClass, ConflictResult, EvasiveAction, RiskScore
+
+    em = EventManager(merge_window=2.0, minimum_duration=0.2)
+    cand = CandidateInteraction(
+        track_id_a=101, track_id_b=102,
+        class_a="car", class_b="motorcycle",
+        interaction_type="VEH_MOTO",
+        start_time=1.0, end_time=4.0,
+        start_frame=30, end_frame=120,
+    )
+
+    # Simulate temporal sampling across interval [1.0, 4.0] with varying TTC
+    # Peak conflict happens at t = 2.5s with TTC = 0.8s
+    sample_timestamps = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+    ttc_vals = [2.5, 1.8, 1.2, 0.8, 1.4, 2.0, 3.0]
+
+    for t, ttc_val in zip(sample_timestamps, ttc_vals):
+        ttc = TTCResult(value=ttc_val, valid=True, model="closest_approach", confidence=0.85)
+        pet = PETResult(value=1.5, valid=True, conflict_point=(200, 200), confidence=0.8, applicable=True)
+        evs = [EvasiveAction(101, t, "BRAKING", -0.45, 0.0)] if t == 2.5 else []
+        res = ConflictResult(
+            classification=ConflictClass.HIGH_RISK_CONFLICT if ttc_val < 1.0 else ConflictClass.POTENTIAL_CONFLICT,
+            severity=0.8 if ttc_val < 1.0 else 0.5,
+            confidence=0.85,
+            reasons=["ttc_critical"] if ttc_val < 1.0 else [],
+            metrics={},
+        )
+        risk = RiskScore(
+            track_id_a=101, track_id_b=102,
+            ttc_score=1.0 - (ttc_val / 3.0),
+            pet_score=0.25,
+            evasive_score=0.3 if evs else 0.0,
+            vulnerability_score=1.0,
+            overall_score=0.85 if t == 2.5 else 0.45,
+        )
+        em.record(cand, ttc, pet, evs, res, risk, zone_id="Z3", timestamp=t)
+
+    events = em.finalize()
+    assert len(events) == 1, "Temporal alerts within merge_window must merge into single ConflictEvent"
+    ev = events[0]
+
+    # Verify all peak/min metrics are retained
+    assert ev.conflict_type == "VEH_MOTO"
+    assert ev.ttc_min == pytest.approx(0.8, rel=1e-3)
+    assert ev.pet_min == pytest.approx(1.5, rel=1e-3)
+    assert ev.max_speed_change == pytest.approx(0.45, rel=1e-3)
+    assert ev.risk_score == pytest.approx(0.85, rel=1e-3)
+    assert ev.peak_conflict_time == pytest.approx(2.5, rel=1e-3)
+    assert ev.peak_conflict_frame is not None
+    assert ev.peak_conflict_frame == int(2.5 * 30.0)
+
+
+# ── Fix #10: Nodus/Kaggle fail-fast without CUDA ──────────────────────────────
+def test_runner_cuda_fail_fast(monkeypatch):
+    import torch
+    from scripts.nodus_kaggle_runner import check_cuda_or_fail
+
+    # Explicit allow_cpu passes without error
+    check_cuda_or_fail(allow_cpu=True)
+
+    # When CUDA is unavailable, check_cuda_or_fail must raise RuntimeError
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    with pytest.raises(RuntimeError) as exc_info:
+        check_cuda_or_fail(allow_cpu=False)
+    assert "CUDA GPU accelerator is required" in str(exc_info.value)
+

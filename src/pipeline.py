@@ -143,7 +143,7 @@ class Pipeline:
         )
 
         # ── Phases 11–15: TTC / PET / Evasive / Classify / Risk ─────────────
-        from src.safety.ttc import compute_ttc_multi
+        from src.safety.ttc import compute_ttc
         from src.safety.pet import compute_pet
         from src.safety.evasive_action import detect_evasive_actions
         from src.safety.conflict_classifier import classify_conflict
@@ -152,6 +152,8 @@ class Pipeline:
 
         risk_weights = cfg.get("risk_weights", {})
         n_samples = int_cfg.get("ttc_samples", 10)  # configurable via interaction.ttc_samples
+        conflict_radius = saf_cfg.get("conflict_radius", 50.0)
+        evasive_window_s = saf_cfg.get("evasive_window_s", 2.0)
 
         # FIX #7 — calibration is disabled by default; log state explicitly
         if calibration.enabled:
@@ -168,37 +170,45 @@ class Pipeline:
             ta = trajectories[cand.track_id_a]
             tb = trajectories[cand.track_id_b]
 
-            # FIX #2 — evaluate TTC across multiple timestamps; get peak conflict time
-            ttc, peak_t = compute_ttc_multi(ta, tb, cand, n_samples=n_samples)
+            t_start = cand.start_time
+            t_end = cand.end_time
+            if t_end <= t_start:
+                sample_ts = np.array([t_start])
+            else:
+                sample_ts = np.linspace(t_start, t_end, max(n_samples, 3))
 
-            pet  = compute_pet(ta, tb, cand)
+            # PET is interaction-specific across the candidate overlap
+            pet = compute_pet(ta, tb, cand)
 
-            # FIX #4 — pass peak conflict time so evasive detection is anchored to it
-            evs  = detect_evasive_actions(
-                ta, tb, cand,
-                speed_change_threshold=saf_cfg["speed_change_threshold"],
-                heading_change_threshold=saf_cfg["heading_change_threshold"],
-                peak_conflict_time=peak_t,
-                evasive_window_s=saf_cfg.get("evasive_window_s", 2.0),
-            )
-            res  = classify_conflict(
-                cand, ttc, pet, evs,
-                ttc_threshold=saf_cfg["ttc_threshold"],
-                pet_threshold=saf_cfg["pet_threshold"],
-            )
-            risk = compute_risk_score(
-                cand, ttc, pet, evs,
-                weights=risk_weights,
-                ttc_threshold=saf_cfg["ttc_threshold"],
-                pet_threshold=saf_cfg["pet_threshold"],
-            )
+            # Sample safety metrics over time across the shared candidate window
+            for t_sample in sample_ts:
+                t = float(t_sample)
+                ttc = compute_ttc(ta, tb, cand, t_query=t, conflict_radius=conflict_radius)
+                evs = detect_evasive_actions(
+                    ta, tb, cand,
+                    speed_change_threshold=saf_cfg["speed_change_threshold"],
+                    heading_change_threshold=saf_cfg["heading_change_threshold"],
+                    peak_conflict_time=t,
+                    evasive_window_s=evasive_window_s,
+                )
+                res = classify_conflict(
+                    cand, ttc, pet, evs,
+                    ttc_threshold=saf_cfg["ttc_threshold"],
+                    pet_threshold=saf_cfg["pet_threshold"],
+                )
+                risk = compute_risk_score(
+                    cand, ttc, pet, evs,
+                    weights=risk_weights,
+                    ttc_threshold=saf_cfg["ttc_threshold"],
+                    pet_threshold=saf_cfg["pet_threshold"],
+                )
 
-            # Zone lookup at peak conflict position
-            mid_pos = self._mid_position(ta, tb, peak_t)
-            zone_id = zone_manager.zone_id(*mid_pos) if mid_pos else None
+                # Zone lookup at sample timestamp position
+                mid_pos = self._mid_position(ta, tb, t)
+                zone_id = zone_manager.zone_id(*mid_pos) if mid_pos else None
 
-            # FIX #3 — record with timestamp so EventManager can do temporal merging
-            event_mgr.record(cand, ttc, pet, evs, res, risk, zone_id, timestamp=peak_t)
+                # Feed temporal conflict alert into EventManager for temporal aggregation and merging
+                event_mgr.record(cand, ttc, pet, evs, res, risk, zone_id=zone_id, timestamp=t)
 
 
         # ── Phase 16: Finalize Events ────────────────────────────────────────
@@ -304,6 +314,8 @@ class Pipeline:
             "max_heading_change": e.max_heading_change,
             "severity": e.severity, "confidence": e.confidence,
             "risk_score": e.risk_score, "reasons": "|".join(e.reasons),
+            "peak_conflict_time": e.peak_conflict_time,
+            "peak_conflict_frame": getattr(e, "peak_conflict_frame", None),
         } for e in events]
         pd.DataFrame(rows).to_csv(path, index=False)
         log.info("Events saved: %s  (%d events)", path, len(events))

@@ -115,8 +115,8 @@ class _PairRecord:
                     duration, self.candidate.track_id_a, self.candidate.track_id_b,
                 )
                 continue
-            # Drop NORMAL events with no reasons
-            if ev.conflict_type == ConflictClass.NORMAL and not ev.reasons:
+            # Drop NORMAL events with zero severity and no conflict reasons
+            if ev.severity == 0.0 and not ev.reasons:
                 continue
             events.append(ev)
 
@@ -196,6 +196,7 @@ class _PairRecord:
             risk_score=max(risk_scores) if risk_scores else 0.0,
             reasons=list(reasons_union),
             peak_conflict_time=peak_conflict_t,
+            peak_conflict_frame=int(peak_conflict_t * fps_approx) if peak_conflict_t is not None else None,
         )
 
 

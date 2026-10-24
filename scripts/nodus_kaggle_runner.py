@@ -30,14 +30,44 @@ Or run directly:
 import os, sys, platform, subprocess
 from pathlib import Path
 
+# Force UTF-8 on Windows / Linux / Kaggle stdout/stderr
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
+
 print("Python  :", sys.version)
 print("Platform:", platform.system(), platform.machine())
 
-# GPU check
+# GPU check & fail-fast validation
+def check_cuda_or_fail(allow_cpu: bool = False) -> None:
+    """
+    Fail fast if CUDA is unavailable.
+    Accidental CPU execution for this heavy ML workload is strictly prohibited.
+    """
+    if allow_cpu:
+        print("⚠ Explicit CPU override enabled (testing/CI only).")
+        return
+
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "CUDA GPU accelerator is required for Nodus / Kaggle execution. "
+                "Accidental CPU execution for this heavy ML workload is strictly prohibited. "
+                "Please enable GPU accelerator before running (e.g. Kaggle Accelerator > GPU T4/P100 "
+                "or ensure NVIDIA drivers/CUDA are active on Nodus Compute)."
+            )
+        device_name = torch.cuda.get_device_name(0)
+        print(f"[OK] CUDA accelerator confirmed: {device_name} (CUDA {torch.version.cuda})")
+    except ImportError:
+        raise RuntimeError("PyTorch is not installed. Please run install_deps() on GPU instance first.")
+
+
 try:
     import torch
     print("PyTorch :", torch.__version__)
-    print("CUDA    :", torch.cuda.is_available(), "— device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU")
+    print("CUDA    :", torch.cuda.is_available(), "— device:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU (Note: pipeline run requires GPU)")
 except ImportError:
     print("PyTorch not installed yet — will install below.")
 
@@ -104,12 +134,12 @@ else:
 
 def setup_repo():
     if REPO_ROOT.exists() and (REPO_ROOT / "src").exists():
-        print(f"✓ Repo found at {REPO_ROOT}")
+        print(f"[OK] Repo found at {REPO_ROOT}")
     else:
         print(f"Cloning repo from {GITHUB_REPO}...")
         REPO_ROOT.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "clone", GITHUB_REPO, str(REPO_ROOT)], check=True)
-        print(f"✓ Cloned to {REPO_ROOT}")
+        print(f"[OK] Cloned to {REPO_ROOT}")
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
     try:
@@ -134,7 +164,7 @@ def download_kaggle_dataset(dataset_slug: str, dest: str = "data/raw"):
         sys.executable, "-m", "kaggle", "datasets", "download",
         "-d", dataset_slug, "-p", dest, "--unzip",
     ], check=True)
-    print(f"✓ Downloaded {dataset_slug} → {dest}")
+    print(f"[OK] Downloaded {dataset_slug} -> {dest}")
 
 # Example (uncomment when running on Kaggle):
 # download_kaggle_dataset("some-user/intersection-traffic-video", "data/raw")
@@ -144,10 +174,10 @@ VIDEO_PATH = "data/samples/sample_traffic.mp4"  # set to actual path on Nodus
 
 # Verify video exists
 if not Path(VIDEO_PATH).exists():
-    print(f"⚠ Video not found at {VIDEO_PATH}")
+    print(f"[WARN] Video not found at {VIDEO_PATH}")
     print("  Set VIDEO_PATH to an actual video file before running the pipeline.")
 else:
-    print(f"✓ Video found: {VIDEO_PATH}")
+    print(f"[OK] Video found: {VIDEO_PATH}")
 
 
 # %% [markdown]
@@ -163,7 +193,7 @@ def ensure_model(model_name: str = "yolov8n.pt"):
     weights_dir.mkdir(parents=True, exist_ok=True)
     target = weights_dir / model_name
     if target.exists():
-        print(f"✓ Model weights found: {target}")
+        print(f"[OK] Model weights found: {target}")
         return str(target)
     # Ultralytics auto-downloads to its cache; copy to our dir
     from ultralytics import YOLO
@@ -172,7 +202,7 @@ def ensure_model(model_name: str = "yolov8n.pt"):
     cache = Path.home() / ".cache" / "ultralytics" / model_name
     if cache.exists():
         shutil.copy(cache, target)
-    print(f"✓ Model ready: {model_name}")
+    print(f"[OK] Model ready: {model_name}")
     return model_name
 
 # MODEL_PATH = ensure_model("yolov8n.pt")   # uncomment to run
@@ -185,8 +215,10 @@ MODEL_PATH = "yolov8n.pt"
 # %%
 def run_pipeline(video_path: str, model: str = "yolov8n.pt",
                  experiment_config: str | None = None,
-                 output_dir: str = "outputs"):
-    """Execute the full Before the Crash pipeline."""
+                 output_dir: str = "outputs",
+                 allow_cpu: bool = False):
+    """Execute the full Before the Crash pipeline on GPU."""
+    check_cuda_or_fail(allow_cpu=allow_cpu)
     from src.config_loader import load_config
     from src.pipeline import Pipeline
 
@@ -291,5 +323,30 @@ def inspect_outputs(output_dir: str = "outputs"):
 # setup_repo()
 # result = run_pipeline(VIDEO_PATH, model="yolov8n.pt")
 # inspect_outputs()
-# ─────────────────────────────────────────────────────────────────────────────
 print("Nodus/Kaggle runner loaded. Set VIDEO_PATH and uncomment cells to execute.")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Nodus/Kaggle GPU runner for Before the Crash")
+    parser.add_argument("--video", type=str, default=VIDEO_PATH, help="Input video path")
+    parser.add_argument("--model", type=str, default=MODEL_PATH, help="YOLO model")
+    parser.add_argument("--config", type=str, default=None, help="Optional experiment config YAML")
+    parser.add_argument("--output-dir", type=str, default="outputs", help="Output directory")
+    parser.add_argument("--sweep", action="store_true", help="Run experiment sweep")
+    parser.add_argument("--allow-cpu", action="store_true", help="Allow CPU execution (testing only)")
+    parser.add_argument("--check-gpu", action="store_true", help="Check CUDA availability and exit")
+    args = parser.parse_args()
+
+    if args.check_gpu:
+        check_cuda_or_fail(allow_cpu=args.allow_cpu)
+        sys.exit(0)
+
+    if Path(args.video).exists():
+        if args.sweep:
+            run_sweep(args.video, model=args.model)
+        else:
+            run_pipeline(args.video, model=args.model, experiment_config=args.config,
+                         output_dir=args.output_dir, allow_cpu=args.allow_cpu)
+    else:
+        print(f"Video file not found: {args.video}. Provide --video <path> to run inference.")

@@ -38,6 +38,7 @@ interaction:
 safety:
   ttc_threshold: 3.0            # seconds; below this is a potential conflict
   pet_threshold: 2.0            # seconds; below this is a potential conflict
+  conflict_radius: 50.0         # pixels; closest approach must be within this to qualify as TTC conflict
   speed_change_threshold: 0.35  # fraction; |Δspeed/speed| above this = evasive
   heading_change_threshold: 25.0  # degrees; above this per-step = evasive turn
 

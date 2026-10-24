@@ -248,26 +248,33 @@ def run_dry_run(n_frames: int = 150, n_tracks: int = 6,
         merge_window=cfg["events"]["merge_window"],
         minimum_duration=cfg["events"]["minimum_duration"],
     )
+    conflict_radius = cfg.get("safety", {}).get("conflict_radius", 50.0)
     for cand in candidates:
         ta = trajs[cand.track_id_a]
         tb = trajs[cand.track_id_b]
-        t_mid = (cand.start_time + cand.end_time) / 2.0
-        ttc  = compute_ttc(ta, tb, cand, t_query=t_mid)
-        pet  = compute_pet(ta, tb, cand)
-        evs  = detect_evasive_actions(ta, tb, cand,
-                   speed_change_threshold=cfg["safety"]["speed_change_threshold"],
-                   heading_change_threshold=cfg["safety"]["heading_change_threshold"])
-        res  = classify_conflict(cand, ttc, pet, evs,
-                   ttc_threshold=cfg["safety"]["ttc_threshold"],
-                   pet_threshold=cfg["safety"]["pet_threshold"])
-        risk = compute_risk_score(cand, ttc, pet, evs,
-                   weights=cfg.get("risk_weights", {}),
-                   ttc_threshold=cfg["safety"]["ttc_threshold"],
-                   pet_threshold=cfg["safety"]["pet_threshold"])
-        mid_x = float(np.interp(t_mid, ta.timestamps, ta.positions[:, 0]))
-        mid_y = float(np.interp(t_mid, ta.timestamps, ta.positions[:, 1]))
-        zone_id = zone_mgr.zone_id(mid_x, mid_y)
-        evmgr.record(cand, ttc, pet, evs, res, risk, zone_id)
+        t_start = cand.start_time
+        t_end = cand.end_time
+        sample_ts = np.linspace(t_start, t_end, 5) if t_end > t_start else np.array([t_start])
+        pet = compute_pet(ta, tb, cand)
+
+        for t_sample in sample_ts:
+            t = float(t_sample)
+            ttc  = compute_ttc(ta, tb, cand, t_query=t, conflict_radius=conflict_radius)
+            evs  = detect_evasive_actions(ta, tb, cand,
+                       speed_change_threshold=cfg["safety"]["speed_change_threshold"],
+                       heading_change_threshold=cfg["safety"]["heading_change_threshold"],
+                       peak_conflict_time=t)
+            res  = classify_conflict(cand, ttc, pet, evs,
+                       ttc_threshold=cfg["safety"]["ttc_threshold"],
+                       pet_threshold=cfg["safety"]["pet_threshold"])
+            risk = compute_risk_score(cand, ttc, pet, evs,
+                       weights=cfg.get("risk_weights", {}),
+                       ttc_threshold=cfg["safety"]["ttc_threshold"],
+                       pet_threshold=cfg["safety"]["pet_threshold"])
+            mid_x = float(np.interp(t, ta.timestamps, ta.positions[:, 0]))
+            mid_y = float(np.interp(t, ta.timestamps, ta.positions[:, 1]))
+            zone_id = zone_mgr.zone_id(mid_x, mid_y)
+            evmgr.record(cand, ttc, pet, evs, res, risk, zone_id, timestamp=t)
 
     events = evmgr.finalize()
     high_risk = [e for e in events if e.severity >= 0.7]

@@ -203,8 +203,9 @@ class ConflictEvent:
     confidence: float
     risk_score: float
     reasons: List[str]
-    # FIX #2 — timestamp of peak conflict within the window
+    # FIX #2 — timestamp and frame of peak conflict within the window
     peak_conflict_time: Optional[float] = None
+    peak_conflict_frame: Optional[int] = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────

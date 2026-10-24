@@ -37,11 +37,25 @@ _COMPATIBLE_SET = {(a, b) for a, b in _COMPATIBLE} | {(b, a) for a, b in _COMPAT
 
 
 def interaction_type(class_a: str, class_b: str) -> str:
-    vru = {"person", "bicycle", "motorcycle"}
-    a_vru = class_a in vru
-    b_vru = class_b in vru
-    if a_vru or b_vru:
+    """
+    Classify semantic interaction type based on object classes.
+    Keeps pedestrian/person interactions strictly separate from motorcycle-vehicle interactions.
+
+    Returns:
+        "VEH_PED": If a pedestrian/person (or bicycle) is involved.
+        "VEH_MOTO": If a motorcycle is involved (with vehicle or motorcycle).
+        "VEH_VEH": Vehicle-to-vehicle interactions (car, bus, truck).
+    """
+    ped_classes = {"person", "pedestrian", "bicycle"}
+    moto_classes = {"motorcycle"}
+
+    is_ped = (class_a in ped_classes) or (class_b in ped_classes)
+    is_moto = (class_a in moto_classes) or (class_b in moto_classes)
+
+    if is_ped:
         return "VEH_PED"
+    if is_moto:
+        return "VEH_MOTO"
     return "VEH_VEH"
 
 
