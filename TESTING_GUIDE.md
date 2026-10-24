@@ -1,325 +1,244 @@
-# Before the Crash — Manual Testing Guide
+# Before the Crash — Testing & Platform Validation Guide
 
-Step-by-step instructions to validate everything we've built, in order,
-on your local Windows machine. No GPU needed for any step until Step 5.
+This guide provides step-by-step instructions to validate the complete **Before the Crash** near-miss conflict detection pipeline across:
+1. **Local Machine (Windows)** — Unit tests, dry-run simulation, and offline safety module validation (no GPU required).
+2. **Nodus Compute (Dedicated GPU)** — Official execution environment for real-video ML inference.
+3. **Kaggle GPU Notebooks (Secondary GPU Fallback)** — Cloud GPU execution path with T4/P100 accelerators.
 
 ---
 
-## Prerequisites
+## Quick Reference Summary
 
-Make sure you are in the project folder for every command:
+| Environment | Purpose | GPU Required? | Commands |
+|---|---|:---:|---|
+| **Local Machine** | Dev, linting, tests, dry-run | ❌ No | `python -m pytest tests/ -v`<br>`python scripts/dry_run.py` |
+| **Nodus Compute** | Production ML pipeline on real video | ✅ Yes (CUDA) | `python scripts/nodus_kaggle_runner.py --video <path>` |
+| **Kaggle Notebook** | Cloud GPU execution fallback | ✅ Yes (CUDA) | `jupytext --to notebook scripts/nodus_kaggle_runner.py`<br>or direct python execution |
 
+---
+
+## Part 1: Local Machine Testing (Windows)
+
+Use your local machine for rapid verification, unit testing, and lightweight mock validation.
+
+### Step 1.0 — Verify Environment & Dependencies
 ```powershell
 cd C:\Users\works\Desktop\malkist\before-the-crash
-```
-
----
-
-## Step 0 — Verify Python + Dependencies
-
-```powershell
 python --version
-# Expected: Python 3.13.x
+# Expected: Python 3.10+ (e.g., Python 3.13.x)
 
-python -c "import numpy, scipy, pandas, yaml, cv2; print('Core deps OK')"
-# Expected: Core deps OK
+python -c "import numpy, scipy, pandas, yaml, cv2; print('[OK] Core dependencies available')"
 ```
 
 ---
 
-## Step 1 — Run Unit Tests (15 deterministic tests, no GPU)
+### Step 1.1 — Run Deterministic Test Suite (26 Tests)
+Run all deterministic tests covering the corrected TTC conflict radius, temporal sampling across interaction windows, event merging, conflict type compatibility, and motorcycle classification:
 
 ```powershell
-python -m pytest tests/test_pipeline.py -v
+python -m pytest tests/ -v
 ```
 
 **Expected output:**
+```text
+============================= 26 passed in ~3-5s ==============================
+tests/test_audit_fixes.py::test_ttc_closest_approach_conflict_radius PASSED
+tests/test_audit_fixes.py::test_multi_timestamp_ttc PASSED
+tests/test_audit_fixes.py::test_event_manager_temporal_merging PASSED
+tests/test_audit_fixes.py::test_evasive_action_proximity PASSED
+tests/test_audit_fixes.py::test_pet_non_crossing_inapplicable PASSED
+tests/test_audit_fixes.py::test_sustained_approach_check PASSED
+tests/test_audit_fixes.py::test_evaluator_conflict_type_compatibility PASSED
+tests/test_audit_fixes.py::test_agent37_dynamic_config PASSED
+tests/test_audit_fixes.py::test_motorcycle_classification PASSED
+tests/test_audit_fixes.py::test_pipeline_temporal_sampling_integration PASSED
+tests/test_audit_fixes.py::test_runner_cuda_fail_fast PASSED
+tests/test_pipeline.py::TestTTC::... PASSED
+...
 ```
-15 passed in ~1-2s
-```
-
-Tests cover: TTC, PET, smoothing, conflict classifier, risk score, event manager, zones.
 
 ---
 
-## Step 2 — Run the Pipeline Dry-Run (no GPU, no real video, no ultralytics)
-
-This generates a synthetic video, runs mock detection + tracking, then exercises
-the full pipeline: trajectories → TTC/PET → events → evidence clips → hotspots.
+### Step 1.2 — Run Pipeline Dry-Run Simulation
+Simulate a complete 10-second traffic scene end-to-end without needing a GPU or real video:
 
 ```powershell
-$env:PYTHONIOENCODING = "utf-8"
 python scripts/dry_run.py --frames 150 --tracks 6
 ```
 
-**Expected output (summary at the end):**
-```
-DRY RUN COMPLETE
-  Frames processed:       150
-  Detections:             ~700-900
-  Trajectories (GOOD):    3-6
-  Candidate interactions: 1+
-  Conflict events:        1+
-  Evidence clips:         1-3
-  Hotspot zones:          1+
-  Wall-clock time:        < 30s
-```
-
-**Outputs generated in `outputs/dry_run/`:**
-- `detections/detections.csv`
-- `tracks/tracks.csv`
-- `events/conflict_events.csv`
-- `clips/event_*.mp4`
-- `annotated_video.mp4`  ← open this to visually verify bboxes + trails
-- `reports/hotspot_summary.csv`
+**What this exercises:**
+- Synthetic video generation (`outputs/dry_run/synthetic.mp4`)
+- Frame ingestion & mock detections
+- Trajectory reconstruction & Savitzky-Golay smoothing
+- Spatial zone grid assignment (5x5 grid)
+- Candidate interaction pairing with sustained approach filtering
+- Multi-sample temporal safety analysis (TTC & PET over time)
+- Temporal event merging via `EventManager`
+- Evidence clip extraction & annotated video rendering (`outputs/dry_run/annotated_video.mp4`)
+- Spatial hotspot ranking report
 
 ---
 
-## Step 3 — Inspect the Dry-Run Outputs
-
-### 3a. Check detections CSV
-```powershell
-python -c "
-import pandas as pd
-df = pd.read_csv('outputs/dry_run/detections/detections.csv')
-print(df.head())
-print('Columns:', list(df.columns))
-print('Rows:', len(df))
-print('Classes:', df.class_name.value_counts().to_dict())
-"
-```
-
-### 3b. Check tracks CSV
-```powershell
-python -c "
-import pandas as pd
-df = pd.read_csv('outputs/dry_run/tracks/tracks.csv')
-print('Unique track IDs:', sorted(df.track_id.unique()))
-print('Frames per track:')
-print(df.groupby('track_id').size())
-"
-```
-
-### 3c. Check conflict events
-```powershell
-python -c "
-import pandas as pd
-df = pd.read_csv('outputs/dry_run/events/conflict_events.csv')
-if len(df) == 0:
-    print('No events — check candidate_pairs threshold (max_candidate_distance in config.yaml)')
-else:
-    print(df[['event_id','conflict_type','zone_id','severity','risk_score','reasons']])
-"
-```
-
-### 3d. Check hotspot summary
-```powershell
-python -c "
-import pandas as pd
-df = pd.read_csv('outputs/dry_run/reports/hotspot_summary.csv')
-print(df)
-"
-```
-
-### 3e. Play the annotated video
-```powershell
-start outputs\dry_run\annotated_video.mp4
-```
-You should see coloured bounding boxes with track IDs, trajectory trails,
-and a red banner for any active conflict events.
-
----
-
-## Step 4 — Test Config Loading + Deep Merge
+### Step 1.3 — Verify Fail-Fast CUDA Protection Locally
+Confirm that the execution runner enforces the GPU constraint and refuses accidental CPU execution:
 
 ```powershell
-python -c "
-from src.config_loader import load_config
-# Base config
-cfg = load_config('config.yaml')
-print('Base TTC threshold:', cfg['safety']['ttc_threshold'])
-
-# Overlay experiment config
-cfg2 = load_config('config.yaml', 'experiments/configs/exp_001_conservative.yaml')
-print('Conservative TTC threshold:', cfg2['safety']['ttc_threshold'])
-# Should be 2.0 (from the overlay)
-"
-```
-
----
-
-## Step 5 — Test Individual Safety Modules (no video needed)
-
-### TTC — head-on approach
-```powershell
-python -c "
-import sys; sys.path.insert(0, '.')
-import numpy as np, math
-from src.schema import Trajectory, TrackQuality
-from src.trajectory.smoothing import smooth_positions
-from src.trajectory.motion import compute_motion
-from src.safety.ttc import compute_ttc
-from src.schema import CandidateInteraction
-
-# Car A moving right at 50px/s, Car B moving left from x=200
-def make_traj(tid, cls, positions):
-    ts = np.linspace(0, len(positions)/10, len(positions))
-    raw = np.array(positions, float)
-    sm = smooth_positions(raw, 3)
-    vels, spd, hdg, acc = compute_motion(sm, ts)
-    return Trajectory(tid, cls, TrackQuality.GOOD, ts, raw, sm, vels, spd, hdg, acc)
-
-ta = make_traj(1, 'car', [[i*5, 100] for i in range(20)])
-tb = make_traj(2, 'car', [[200-i*5, 100] for i in range(20)])
-cand = CandidateInteraction(1,2,'car','car','VEH_VEH', 0,2,0,20)
-result = compute_ttc(ta, tb, cand, t_query=0.5)
-print('TTC (head-on):', result.value, '  valid:', result.valid, '  model:', result.model)
-assert result.valid and result.value < 10, 'TTC test FAILED'
-print('TTC test PASSED')
-"
-```
-
-### Risk Score — ensure components add up correctly
-```powershell
-python -c "
-from src.schema import CandidateInteraction, TTCResult, PETResult
-from src.safety.risk_score import compute_risk_score
-import math
-
-cand = CandidateInteraction(1,2,'car','person','VEH_PED',0,3,0,90)
-ttc  = TTCResult(0.5, True, 'closest_approach', 0.9)
-pet  = PETResult(0.3, True, (100,100), 0.9)
-risk = compute_risk_score(cand, ttc, pet, [], ttc_threshold=3.0, pet_threshold=2.0)
-print('TTC score:    ', risk.ttc_score)
-print('PET score:    ', risk.pet_score)
-print('Vuln score:   ', risk.vulnerability_score)
-print('Overall:      ', risk.overall_score)
-assert risk.overall_score > 0.3, 'Risk score unexpectedly low'
-print('Risk score test PASSED')
-"
-```
-
----
-
-## Step 6 — Test Video Ingestion on a Real File
-
-If you have any `.mp4` file handy, test ingestion:
-
-```powershell
-python -c "
-from src.ingestion.video_reader import get_video_metadata, VideoReader
-import sys
-
-vid = sys.argv[1] if len(sys.argv) > 1 else 'outputs/dry_run/synthetic.mp4'
-meta = get_video_metadata(vid)
-print('FPS:', meta.fps)
-print('Frames:', meta.frame_count)
-print('Resolution:', meta.width, 'x', meta.height)
-print('Duration:', round(meta.duration_s, 2), 's')
-
-# Read first 5 frames
-count = 0
-for frame, fid, ts, fps in VideoReader(vid, frame_skip=1):
-    print(f'  frame {fid} @ t={ts:.3f}s  shape={frame.shape}')
-    count += 1
-    if count >= 5:
-        break
-print('Ingestion OK')
-" outputs/dry_run/synthetic.mp4
-```
-
----
-
-## Step 7 — Experiment Config Validation
-
-```powershell
-python -c "
-from src.config_loader import load_config
-import yaml
-
-for name in ['exp_001_conservative', 'exp_002_moderate', 'exp_003_sensitive']:
-    cfg = load_config('config.yaml', f'experiments/configs/{name}.yaml')
-    print(f'{name}:')
-    print(f'  TTC threshold:  {cfg[\"safety\"][\"ttc_threshold\"]}')
-    print(f'  PET threshold:  {cfg[\"safety\"][\"pet_threshold\"]}')
-    print(f'  Merge window:   {cfg[\"events\"][\"merge_window\"]}')
-"
-```
-
----
-
-## Step 8 — (Nodus/Kaggle only) Run Full Pipeline on Real Video
-
-Once you have a real traffic video on Nodus or Kaggle:
-
-```bash
-# Install deps on compute node
-pip install ultralytics>=8.2 opencv-python-headless scipy pandas PyYAML tqdm scikit-learn
-
-# Run the pipeline
-python scripts/run_pipeline.py \
-    --video /path/to/traffic_video.mp4 \
-    --config config.yaml \
-    --experiment experiments/configs/exp_002_moderate.yaml
-```
-
-Or use the self-contained notebook runner:
-
-```bash
-python scripts/nodus_kaggle_runner.py
-# (edit VIDEO_PATH and uncomment the final cell first)
-```
-
----
-
-## Step 9 — Agent37 Analysis (after running experiments on Nodus)
-
-After running multiple experiment configs on Nodus and saving results to `experiments/results/`:
-
-```powershell
-python scripts/agent37_analyze.py --results-dir experiments/results/ --generate-next
+# Expect failure on CPU machines without GPU accelerator:
+python scripts/nodus_kaggle_runner.py --check-gpu
 ```
 
 **Expected output:**
-- Comparison table across experiments (Precision / Recall / F1 / false alerts/min)
-- Best-performing config identification
-- Threshold sensitivity analysis
-- New recommended config written to `experiments/configs/exp_next_agent37.yaml`
-
----
-
-## Checkpoint: What Passes = Pipeline Is Ready for Real Video
-
-| Check | Command | Pass condition |
-|-------|---------|----------------|
-| Core deps | `python -c "import numpy, scipy, cv2"` | No error |
-| Unit tests | `pytest tests/ -v` | 15/15 passed |
-| Dry run | `python scripts/dry_run.py` | Completes, outputs generated |
-| Annotated video | `start outputs\dry_run\annotated_video.mp4` | Boxes + trails visible |
-| Config merge | Step 4 above | Conservative TTC = 2.0 |
-| TTC module | Step 5 above | TTC test PASSED |
-| Risk score | Step 5 above | Risk score test PASSED |
-
-Once all boxes are checked, the pipeline is confirmed end-to-end on synthetic data
-and is ready to be pointed at real video on Nodus Compute.
-
----
-
-## Troubleshooting
-
-**`UnicodeEncodeError` with checkmarks on Windows terminal:**
-```powershell
-$env:PYTHONIOENCODING = "utf-8"
-# Then re-run the command
+```text
+RuntimeError: CUDA GPU accelerator is required for Nodus / Kaggle execution. Accidental CPU execution for this heavy ML workload is strictly prohibited.
 ```
 
-**`ModuleNotFoundError: ultralytics`:**  
-This only affects `scripts/run_pipeline.py` (the real pipeline with YOLO).  
-The dry-run and unit tests do NOT require ultralytics.
+---
 
-**`No conflict events found` in dry-run:**  
-Increase `interaction.max_candidate_distance` in `config.yaml` (try 200-300) or
-decrease `trajectory.min_track_length` to 5.
+## Part 2: Platform 1 — Nodus Compute Execution
 
-**Tracker produces very few GOOD trajectories:**  
-Reduce `trajectory.min_track_length` in `config.yaml`.
+**Nodus Compute** is the primary environment for real-video ML inference.
+
+### Step 2.1 — Access Nodus Environment & Clone Codebase
+Log in to your Nodus Compute instance and clone the official repository:
+
+```bash
+git clone https://github.com/ShraddhaBora/B4D-Crash.git
+cd B4D-Crash
+```
+
+### Step 2.2 — Install Compute Dependencies
+Ensure PyTorch with CUDA support and computer vision dependencies are present:
+
+```bash
+# PyTorch with CUDA 12.1
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+
+# Core pipeline dependencies
+pip install ultralytics>=8.2 opencv-python-headless>=4.9 scipy>=1.12 pandas>=2.2 PyYAML>=6.0 tqdm>=4.66 scikit-learn>=1.4 matplotlib>=3.8 seaborn>=0.13
+```
+
+### Step 2.3 — Verify CUDA Acceleration
+```bash
+python scripts/nodus_kaggle_runner.py --check-gpu
+```
+
+**Expected output:**
+```text
+[OK] CUDA accelerator confirmed: NVIDIA A100 / RTX / Tesla ... (CUDA 12.x)
+```
+
+### Step 2.4 — Execute Real-Video Inference
+Run the end-to-end pipeline on your real traffic video:
+
+```bash
+python scripts/nodus_kaggle_runner.py \
+    --video /path/to/intersection_video.mp4 \
+    --model yolov8n.pt \
+    --output-dir outputs/nodus_run
+```
+
+**Pipeline Stages Executed:**
+1. **Ingestion**: Decodes video stream at native frame rate.
+2. **Perception**: GPU-accelerated YOLOv8 detection + ByteTrack tracking.
+3. **Trajectory Reconstruction**: Position smoothing and velocity/acceleration estimation.
+4. **Candidate Generation**: Sustained closing approach detection.
+5. **Safety Metrics**: Multi-timestamp closest-approach TTC, conflict radius thresholding, crossing PET, evasive action windowing.
+6. **Event Generation**: Temporal clustering and merging within `merge_window`.
+7. **Evidence & Visualization**: MP4 clip extraction around peak conflicts, annotated full video, CSV event logs.
+8. **Hotspot Analysis**: Spatial concentration ranking across zones.
+
+### Step 2.5 — Run Parameter Sensitivity Sweep
+To evaluate multiple parameter profiles (Conservative, Moderate, Sensitive):
+
+```bash
+python scripts/nodus_kaggle_runner.py \
+    --video /path/to/intersection_video.mp4 \
+    --sweep
+```
+
+### Step 2.6 — Trigger Agent37 Autonomous Optimization
+Analyze sweep results and generate the empirical next-iteration configuration:
+
+```bash
+python scripts/agent37_analyze.py --results-dir experiments/results/ --generate-next
+```
+Agent37 writes the tuned YAML to `experiments/configs/exp_next_agent37.yaml`.
+
+---
+
+## Part 3: Platform 2 — Kaggle GPU Notebook Execution
+
+Use Kaggle GPU instances (T4 x2 or P100) as the secondary fallback environment.
+
+### Step 3.1 — Create Notebook & Enable Accelerator
+1. Create a new notebook on Kaggle.
+2. In the right-hand panel: **Notebook Options** $\rightarrow$ **Accelerator** $\rightarrow$ Select **GPU T4** or **GPU P100**.
+3. Under **Internet**, toggle **Internet on**.
+
+### Step 3.2 — Clone Repository
+In the first code cell:
+
+```python
+!git clone https://github.com/ShraddhaBora/B4D-Crash.git /kaggle/working/B4D-Crash
+%cd /kaggle/working/B4D-Crash
+```
+
+### Step 3.3 — Install Dependencies & Verify GPU
+```python
+!pip install -q ultralytics opencv-python-headless
+!python scripts/nodus_kaggle_runner.py --check-gpu
+```
+
+### Step 3.4 — Mount Traffic Dataset
+- Option A (Kaggle Dataset): Add dataset via the UI (`Add Data`) or run:
+  ```python
+  # Example: download public traffic video
+  # !kaggle datasets download -d <user/dataset> -p data/raw --unzip
+  ```
+- Option B (Sample or Direct URL):
+  ```python
+  !wget -O data/samples/traffic.mp4 "https://example.com/traffic_video.mp4"
+  ```
+
+### Step 3.5 — Execute Pipeline
+```python
+!python scripts/nodus_kaggle_runner.py \
+    --video data/samples/traffic.mp4 \
+    --model yolov8n.pt \
+    --output-dir /kaggle/working/outputs
+```
+
+### Step 3.6 — Inspect & Download Artifacts
+```python
+import os
+for root, dirs, files in os.walk("/kaggle/working/outputs"):
+    for file in files:
+        path = os.path.join(root, file)
+        size_kb = os.path.getsize(path) / 1024
+        print(f"{os.path.relpath(path, '/kaggle/working/outputs'):<50} {size_kb:7.1f} KB")
+```
+
+---
+
+## Output Artifacts Checklist
+
+Every full pipeline run produces the following artifacts:
+
+| Output File | Format | Contents |
+|---|---|---|
+| `events/conflict_events.csv` | CSV | Event ID, road user classes, conflict type (`VEH_PED`, `VEH_MOTO`, `VEH_VEH`), min TTC, min PET, peak conflict timestamp & frame, max speed change, severity, risk score. |
+| `clips/event_<id>.mp4` | MP4 | Video clips bounded around the peak conflict timestamp for human review. |
+| `annotated_video.mp4` | MP4 | Full video rendered with bounding boxes, tracking IDs, trajectory trails, and active conflict alerts. |
+| `reports/hotspot_summary.csv` | CSV | Spatial zone risk rankings, incident frequency, and road user distributions. |
+| `metrics.json` | JSON | Summary execution metrics, frame rate, total events, and classification breakdown. |
+
+---
+
+## Troubleshooting & Verification Checklist
+
+- **Issue**: `RuntimeError: CUDA GPU accelerator is required...`
+  - **Fix**: Ensure you have selected a GPU runtime (on Kaggle: Accelerator $\rightarrow$ GPU T4; on Nodus: ensure `nvidia-smi` shows active GPU devices).
+- **Issue**: `Video file not found`
+  - **Fix**: Check video file path with `ls -l <path>` and pass `--video /absolute/path/to/video.mp4`.
+- **Issue**: `ModuleNotFoundError: No module named 'src'`
+  - **Fix**: Ensure your working directory is the repository root (`cd /path/to/B4D-Crash`).
