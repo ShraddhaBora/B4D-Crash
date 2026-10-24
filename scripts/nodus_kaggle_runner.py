@@ -85,24 +85,40 @@ def install_deps():
 # ## 2. Repo / Code Setup
 
 # %%
-# ── Option A: Repo is already present (Nodus) ────────────────────────────────
-REPO_ROOT = Path("/workspace/before-the-crash")  # adjust for Nodus mount
+# Target official GitHub repository (Fix #10)
+GITHUB_REPO = "https://github.com/ShraddhaBora/B4D-Crash.git"
 
-# ── Option B: Clone from GitHub (Kaggle) ─────────────────────────────────────
-GITHUB_REPO = "https://github.com/YOUR_ORG/before-the-crash.git"
+# Dynamically resolve REPO_ROOT without hardcoded workspace assumptions:
+# 1. If running within an already-cloned repo directory:
+if (Path.cwd() / "src" / "pipeline.py").exists():
+    REPO_ROOT = Path.cwd()
+elif Path("/workspace/before-the-crash").exists():
+    REPO_ROOT = Path("/workspace/before-the-crash")
+elif Path("/kaggle/working/B4D-Crash").exists():
+    REPO_ROOT = Path("/kaggle/working/B4D-Crash")
+elif Path("/kaggle/working").exists():
+    REPO_ROOT = Path("/kaggle/working/B4D-Crash")
+else:
+    REPO_ROOT = Path("./before-the-crash").resolve()
+
 
 def setup_repo():
-    if REPO_ROOT.exists():
+    if REPO_ROOT.exists() and (REPO_ROOT / "src").exists():
         print(f"✓ Repo found at {REPO_ROOT}")
     else:
-        print("Cloning repo...")
+        print(f"Cloning repo from {GITHUB_REPO}...")
+        REPO_ROOT.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "clone", GITHUB_REPO, str(REPO_ROOT)], check=True)
         print(f"✓ Cloned to {REPO_ROOT}")
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
+    try:
+        os.chdir(REPO_ROOT)
+    except Exception as e:
+        print(f"Note: Could not chdir to {REPO_ROOT}: {e}")
+
 
 setup_repo()
-os.chdir(REPO_ROOT)
 
 
 # %% [markdown]

@@ -70,12 +70,16 @@ def evaluate(
         for gi, gt in enumerate(ground_truth):
             if gi in matched_gt:
                 continue
+            # FIX #8 — require compatible conflict type in addition to temporal IoU
+            if not _conflict_types_compatible(pred.conflict_type, gt.conflict_type):
+                continue
             tiou = _temporal_iou(pred.start_time, pred.end_time,
                                   gt.start_time, gt.end_time)
             if tiou >= iou_threshold:
                 matched_gt.add(gi)
                 matched_pred.add(pi)
                 break
+
 
     TP = len(matched_gt)
     FP = len(predictions) - len(matched_pred)
@@ -114,3 +118,19 @@ def _temporal_iou(s1: float, e1: float, s2: float, e2: float) -> float:
     inter = max(0.0, min(e1, e2) - max(s1, s2))
     union = max(e1, e2) - min(s1, s2)
     return inter / max(union, 1e-9)
+
+
+def _conflict_types_compatible(pred_type: str, gt_type: str) -> bool:
+    """
+    FIX #8 — A VEH_PED prediction should not count as a TP for a VEH_VEH
+    ground-truth event, and vice versa.
+
+    Matching rules:
+      - Exact match always compatible.
+      - Unknown/empty type in either prediction or GT is treated as wildcard
+        (to handle annotations that lack type labels).
+    """
+    if not pred_type or not gt_type:
+        return True          # missing label → no penalty
+    return pred_type.upper() == gt_type.upper()
+

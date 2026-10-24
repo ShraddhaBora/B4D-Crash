@@ -93,8 +93,8 @@ def generate_candidates(
             if min_dist > max_distance:
                 continue
 
-            # Check approach: does distance decrease at some point?
-            if not _has_approach(dists):
+            # Check approach: sustained distance decrease (not just one noisy step)
+            if not _has_sustained_approach(dists):
                 continue
 
             candidates.append(CandidateInteraction(
@@ -127,6 +127,42 @@ def _interp_positions(timestamps: np.ndarray, positions: np.ndarray, query_ts: n
     return np.stack([x, y], axis=1)
 
 
-def _has_approach(dists: np.ndarray) -> bool:
-    """True if distance is decreasing for at least one consecutive pair."""
-    return bool(np.any(np.diff(dists) < -2.0))   # >2 px closing
+
+def _has_sustained_approach(
+    dists: np.ndarray,
+    min_consecutive: int = 3,
+    min_fraction: float = 0.25,
+) -> bool:
+    """
+    FIX #6 — Require a stable, sustained approach rather than a single closing step.
+
+    Conditions (BOTH must be satisfied):
+      1. There exists a run of at least `min_consecutive` consecutive samples
+         where distance is monotonically decreasing.
+      2. At least `min_fraction` of all consecutive-sample pairs show distance
+         decreasing by more than 2 px (so isolated noise does not trigger).
+
+    This prevents a brief oscillation or detector jitter from creating a candidate.
+    """
+    if len(dists) < 2:
+        return False
+
+    deltas = np.diff(dists)         # negative = closing
+
+    # Condition 2: fraction of pairs showing meaningful closing
+    closing = deltas < -2.0
+    if closing.mean() < min_fraction:
+        return False
+
+    # Condition 1: longest consecutive run of closing steps
+    max_run = 0
+    current_run = 0
+    for c in closing:
+        if c:
+            current_run += 1
+            max_run = max(max_run, current_run)
+        else:
+            current_run = 0
+
+    return max_run >= min_consecutive
+

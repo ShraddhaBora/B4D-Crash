@@ -140,6 +140,9 @@ class PETResult:
     valid: bool
     conflict_point: Optional[Tuple[float, float]]
     confidence: float
+    # FIX #5 — explicitly track whether PET is applicable to this geometry
+    applicable: bool = True       # False = geometry is not crossing-type
+    inapplicable_reason: Optional[str] = None  # e.g. "not_crossing_geometry"
 
 
 @dataclass
@@ -200,6 +203,8 @@ class ConflictEvent:
     confidence: float
     risk_score: float
     reasons: List[str]
+    # FIX #2 — timestamp of peak conflict within the window
+    peak_conflict_time: Optional[float] = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────

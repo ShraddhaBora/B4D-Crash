@@ -77,7 +77,7 @@ def main():
 
     # ── Next experiment recommendation ───────────────────────────────────────
     if args.generate_next:
-        next_cfg = generate_next_config(best, df)
+        next_cfg = generate_next_config(best, df, sensitivity)
         out_path = Path("experiments/configs/exp_next_agent37.yaml")
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, "w") as fh:
@@ -165,24 +165,67 @@ def compute_sensitivity(experiments: List[Dict]) -> Dict[str, float]:
     return sensitivity
 
 
-def generate_next_config(best: Dict, df: pd.DataFrame) -> str:
-    """Generate YAML for a next experiment based on the best config."""
-    import yaml
-    exp_id = "exp_next_agent37"
+def generate_next_config(
+    best: Dict,
+    df: pd.DataFrame,
+    sensitivity: Optional[Dict[str, float]] = None,
+) -> str:
+    """
+    Generate YAML for a next experiment based on empirical experiment results (Fix #9).
+
+    Adjusts safety thresholds dynamically based on the best-performing experiment's
+    precision/recall balance and empirical parameter sensitivity, rather than static
+    hardcoded values.
+    """
+    exp_id = f"exp_next_{best.get('experiment_id', 'agent37')}_refined"
+
+    # Base parameters from best experiment if present
+    ttc = float(best.get("safety.ttc_threshold", best.get("ttc_threshold", 3.0)))
+    pet = float(best.get("safety.pet_threshold", best.get("pet_threshold", 2.0)))
+    speed_chg = float(best.get("safety.speed_change_threshold", best.get("speed_change_threshold", 0.30)))
+    heading_chg = float(best.get("safety.heading_change_threshold", best.get("heading_change_threshold", 20.0)))
+    merge_win = float(best.get("events.merge_window", best.get("merge_window", 2.0)))
+    min_dur = float(best.get("events.minimum_duration", best.get("minimum_duration", 0.3)))
+
+    prec = float(best.get("precision", 0.5))
+    rec = float(best.get("recall", 0.5))
+
+    # Directional adjustment:
+    # If precision < recall: reduce false positives by tightening conflict thresholds
+    # If recall < precision: capture missed near-misses by relaxing conflict thresholds
+    if prec < rec - 0.05:
+        ttc = max(1.5, round(ttc * 0.9, 2))
+        pet = max(1.0, round(pet * 0.9, 2))
+        speed_chg = min(0.60, round(speed_chg * 1.15, 2))
+        heading_chg = min(45.0, round(heading_chg * 1.10, 1))
+        notes = "Precision-constrained: tightened TTC/PET and evasive thresholds to curb false positives."
+    elif rec < prec - 0.05:
+        ttc = min(5.0, round(ttc * 1.1, 2))
+        pet = min(4.0, round(pet * 1.1, 2))
+        speed_chg = max(0.15, round(speed_chg * 0.85, 2))
+        heading_chg = max(10.0, round(heading_chg * 0.90, 1))
+        notes = "Recall-constrained: relaxed TTC/PET and evasive thresholds to capture more edge conflicts."
+    else:
+        if sensitivity and "safety.ttc_threshold" in sensitivity:
+            corr = sensitivity["safety.ttc_threshold"]
+            delta = 0.2 if corr > 0 else -0.2
+            ttc = max(1.5, min(5.0, round(ttc + delta, 2)))
+        notes = "Balanced: fine-tuned threshold based on empirical sensitivity gradient."
+
     return (
         f"# Agent37 — Generated next experiment config\n"
         f"# Based on best-performing run: {best.get('experiment_id', 'unknown')}\n"
+        f"# Strategy: {notes}\n"
         f"experiment_id: {exp_id}\n"
-        f"description: 'Agent37 recommended — interpolated from best config'\n\n"
-        f"# Refine thresholds based on sensitivity analysis\n"
+        f"description: 'Agent37 recommended next configuration based on empirical run metrics'\n\n"
         f"safety:\n"
-        f"  ttc_threshold: 3.5\n"
-        f"  pet_threshold: 2.0\n"
-        f"  speed_change_threshold: 0.30\n"
-        f"  heading_change_threshold: 22.0\n\n"
+        f"  ttc_threshold: {ttc}\n"
+        f"  pet_threshold: {pet}\n"
+        f"  speed_change_threshold: {speed_chg}\n"
+        f"  heading_change_threshold: {heading_chg}\n\n"
         f"events:\n"
-        f"  merge_window: 2.0\n"
-        f"  minimum_duration: 0.3\n"
+        f"  merge_window: {merge_win}\n"
+        f"  minimum_duration: {min_dur}\n"
     )
 
 
