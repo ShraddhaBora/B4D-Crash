@@ -60,6 +60,16 @@ def build_trajectories(
 
         # ── Smooth + motion ───────────────────────────────────────────────────
         positions = smooth_positions(raw_positions, window=smoothing_window)
+        # Defensive clamp: smoothing must not change array length, but clamp
+        # to be safe so compute_motion never receives mismatched arrays.
+        if len(positions) != len(timestamps):
+            n_min = min(len(positions), len(timestamps))
+            log.warning(
+                "Track %d: positions len=%d != timestamps len=%d after smoothing — clamping to %d",
+                tid, len(positions), len(timestamps), n_min,
+            )
+            positions  = positions[:n_min]
+            timestamps = timestamps[:n_min]
         velocities, speeds, headings, accelerations = compute_motion(positions, timestamps)
 
         trajectories[tid] = Trajectory(

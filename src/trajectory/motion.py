@@ -24,50 +24,68 @@ def compute_motion(
         headings      (N,)    degrees  (0=right, CW positive)
         accelerations (N,)    scalar px/s²  (magnitude of Δvelocity/Δt)
     """
-    n = len(positions)
-    velocities = np.zeros((n, 2))
-    speeds = np.zeros(n)
-    headings = np.zeros(n)
+    # Guard: must have matching lengths; clamp to shorter array defensively.
+    n = min(len(positions), len(timestamps))
+    positions  = positions[:n]
+    timestamps = timestamps[:n]
+
+    velocities    = np.zeros((n, 2))
+    speeds        = np.zeros(n)
+    headings      = np.zeros(n)
     accelerations = np.zeros(n)
 
     if n < 2:
         return velocities, speeds, headings, accelerations
 
-    # Central differences for interior points; forward/backward at edges
-    for i in range(n):
-        if i == 0:
-            dt = timestamps[1] - timestamps[0]
-            dp = positions[1] - positions[0]
-        elif i == n - 1:
-            dt = timestamps[-1] - timestamps[-2]
-            dp = positions[-1] - positions[-2]
-        else:
-            dt = timestamps[i + 1] - timestamps[i - 1]
-            dp = positions[i + 1] - positions[i - 1]
+    # ── Velocity via finite differences (vectorised, no per-index loop) ────────
+    # Build arrays of Δposition and Δtime using forward diff at start,
+    # backward diff at end, central diff everywhere else.
+    dp = np.zeros((n, 2))
+    dt = np.zeros(n)
 
-        if dt > 0:
-            v = dp / dt
-        else:
-            v = np.zeros(2)
+    if n == 2:
+        # Only two points — forward diff for [0], backward diff for [1]
+        dp[0] = positions[1] - positions[0]
+        dt[0] = timestamps[1] - timestamps[0]
+        dp[1] = positions[1] - positions[0]
+        dt[1] = timestamps[1] - timestamps[0]
+    else:
+        # Forward difference at index 0
+        dp[0] = positions[1] - positions[0]
+        dt[0] = timestamps[1] - timestamps[0]
+        # Backward difference at last index
+        dp[-1] = positions[-1] - positions[-2]
+        dt[-1] = timestamps[-1] - timestamps[-2]
+        # Central difference for interior indices 1..n-2
+        dp[1:-1] = positions[2:] - positions[:-2]
+        dt[1:-1] = timestamps[2:] - timestamps[:-2]
 
-        velocities[i] = v
-        speeds[i] = float(np.linalg.norm(v))
-        # atan2(vy, vx) -> convert to degrees; 0=right, CW positive (image coords)
-        headings[i] = float(np.degrees(np.arctan2(v[1], v[0])))
+    # Avoid division by zero
+    safe_dt = np.where(dt > 0, dt, np.inf)
+    velocities = dp / safe_dt[:, np.newaxis]
 
-    # Acceleration: magnitude of velocity change per time
-    for i in range(n):
-        if i == 0:
-            dt = timestamps[1] - timestamps[0]
-            dv = velocities[1] - velocities[0]
-        elif i == n - 1:
-            dt = timestamps[-1] - timestamps[-2]
-            dv = velocities[-1] - velocities[-2]
-        else:
-            dt = timestamps[i + 1] - timestamps[i - 1]
-            dv = velocities[i + 1] - velocities[i - 1]
+    speeds  = np.linalg.norm(velocities, axis=1)
+    headings = np.degrees(np.arctan2(velocities[:, 1], velocities[:, 0]))
 
-        accelerations[i] = float(np.linalg.norm(dv) / dt) if dt > 0 else 0.0
+    # ── Acceleration via finite differences on velocity ────────────────────────
+    dv = np.zeros((n, 2))
+    at = np.zeros(n)
+
+    if n == 2:
+        dv[0]  = velocities[1] - velocities[0]
+        at[0]  = timestamps[1] - timestamps[0]
+        dv[-1] = velocities[1] - velocities[0]
+        at[-1] = timestamps[1] - timestamps[0]
+    else:
+        dv[0]  = velocities[1] - velocities[0]
+        at[0]  = timestamps[1] - timestamps[0]
+        dv[-1] = velocities[-1] - velocities[-2]
+        at[-1] = timestamps[-1] - timestamps[-2]
+        dv[1:-1] = velocities[2:] - velocities[:-2]
+        at[1:-1] = timestamps[2:] - timestamps[:-2]
+
+    safe_at = np.where(at > 0, at, np.inf)
+    accelerations = np.linalg.norm(dv, axis=1) / safe_at
 
     return velocities, speeds, headings, accelerations
 

@@ -174,6 +174,74 @@ class TestSmoothing:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Motion Computation Tests  (regression for Kaggle IndexError fix)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestMotionCompute:
+    """Regression tests for compute_motion edge cases that caused the
+    'IndexError: index 2 is out of bounds for axis 0 with size 2' crash
+    seen in Kaggle GPU execution (Step 5 / pipeline.py line 140)."""
+
+    def test_two_point_track_does_not_crash(self):
+        """compute_motion must not raise IndexError with exactly 2 observations."""
+        from src.trajectory.motion import compute_motion
+
+        positions  = np.array([[0.0, 0.0], [10.0, 5.0]])
+        timestamps = np.array([0.0, 0.5])
+        vels, speeds, headings, accels = compute_motion(positions, timestamps)
+
+        assert vels.shape    == (2, 2)
+        assert speeds.shape  == (2,)
+        assert headings.shape == (2,)
+        assert accels.shape  == (2,)
+        # Velocity should be non-zero (objects are moving)
+        assert np.any(speeds > 0), "Speeds should be positive for moving objects"
+
+    def test_single_point_track_returns_zeros(self):
+        """compute_motion with 1 point must return all-zero arrays."""
+        from src.trajectory.motion import compute_motion
+
+        positions  = np.array([[5.0, 7.0]])
+        timestamps = np.array([1.0])
+        vels, speeds, headings, accels = compute_motion(positions, timestamps)
+
+        assert vels.shape == (1, 2)
+        assert np.all(vels == 0)
+        assert np.all(speeds == 0)
+
+    def test_mismatched_lengths_clamped_safely(self):
+        """If positions and timestamps lengths differ, compute_motion must not
+        raise IndexError — it should silently clamp to the shorter array."""
+        from src.trajectory.motion import compute_motion
+
+        # Simulate the Kaggle crash: positions has 3 rows, timestamps has 2
+        positions  = np.array([[0.0, 0.0], [5.0, 5.0], [10.0, 10.0]])
+        timestamps = np.array([0.0, 0.5])   # shorter than positions
+        vels, speeds, headings, accels = compute_motion(positions, timestamps)
+
+        # Should clamp to n=2 without crashing
+        assert vels.shape == (2, 2)
+        assert speeds.shape == (2,)
+
+    def test_three_point_track_uses_central_difference(self):
+        """Interior point of a 3-point track should use central differences."""
+        from src.trajectory.motion import compute_motion
+
+        # Uniform motion: v = 10 px/s in x
+        positions  = np.array([[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]])
+        timestamps = np.array([0.0, 1.0, 2.0])
+        vels, speeds, headings, accels = compute_motion(positions, timestamps)
+
+        # All three points should show vx ≈ 10 px/s
+        assert abs(speeds[0] - 10.0) < 1e-9
+        assert abs(speeds[1] - 10.0) < 1e-9
+        assert abs(speeds[2] - 10.0) < 1e-9
+        # Uniform motion → acceleration ≈ 0
+        assert np.all(accels < 1e-9)
+
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Conflict Classifier Tests
 # ──────────────────────────────────────────────────────────────────────────────
 
