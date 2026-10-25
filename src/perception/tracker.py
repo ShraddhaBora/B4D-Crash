@@ -1,8 +1,33 @@
 """
-Phase 3 — Multi-Object Tracking via ByteTrack (through Ultralytics).
+Phase 3 — Multi-Object Tracking.
 
-Accepts standardised Detection objects and produces TrackObservation objects
-with persistent track IDs.  The tracker state is maintained between frames.
+Architecture change (Ultralytics ≥ 8.2 API incompatibility fix):
+──────────────────────────────────────────────────────────────────
+The original code called BYTETracker.update(numpy_array, frame) which
+immediately fails in Ultralytics ≥ 8.2 because _split_detections()
+accesses results.conf on what it expects to be an Ultralytics Results
+object, not a NumPy array.
+
+Root cause:  The internal BYTETracker API is not stable and changed
+             between Ultralytics versions.  Direct use of
+             ultralytics.trackers.byte_tracker.BYTETracker is
+             version-sensitive and must not be relied upon.
+
+Chosen fix:  Detection + tracking are unified in YOLODetector.track()
+             which calls model.track(persist=True, tracker="bytetrack.yaml")
+             — the officially supported high-level Ultralytics API.
+             This module now receives TrackObservation objects that were
+             already produced by YOLODetector.track() and simply passes
+             them through, maintaining the same external interface for
+             the rest of the pipeline.
+
+Fallback:    _SimpleIoUTracker is kept as a clearly-labelled fallback.
+             When it is active, logs will never claim ByteTrack is in use.
+
+Validation stages (logged explicitly):
+  [TRACKER INIT]   — class constructed
+  [TRACKER READY]  — first frame processed without exception
+  [TRACKER STABLE] — track IDs persisted across ≥ 2 consecutive frames
 """
 
 from __future__ import annotations
@@ -17,13 +42,25 @@ from src.schema import Detection, TrackObservation
 log = get_logger(__name__)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Public tracker class
+# ──────────────────────────────────────────────────────────────────────────────
+
 class ByteTracker:
     """
-    Thin wrapper around Ultralytics ByteTrack that converts our Detection
-    schema ↔ tracker input/output.
+    Pipeline-facing tracker wrapper.
 
-    We feed detections frame-by-frame, and get back TrackObservation objects
-    with stable integer track_ids.
+    In the new architecture, YOLODetector.track() performs both detection
+    AND ByteTrack tracking via model.track(persist=True, tracker='bytetrack.yaml').
+    This class receives the resulting TrackObservation list from the detector
+    and passes it through, acting as a thin validation/logging layer.
+
+    If the detector is running in detect-only mode (no YOLO.track support),
+    this class falls back to _SimpleIoUTracker and logs that fact clearly.
+
+    Public interface is unchanged from the pipeline's perspective:
+        observations = tracker.update(detections, frame)   [legacy mode only]
+        observations = tracker.passthrough(observations)   [new unified mode]
     """
 
     def __init__(
@@ -37,27 +74,32 @@ class ByteTracker:
         self.track_low_thresh = track_low_thresh
         self.new_track_thresh = new_track_thresh
         self.track_buffer = track_buffer
-        self._tracker = None
-        self._init_tracker()
 
-    def _init_tracker(self) -> None:
-        try:
-            from ultralytics.trackers.byte_tracker import BYTETracker
-            # Ultralytics requires an argparse-style object
-            args = _TrackerArgs(
-                track_high_thresh=self.track_high_thresh,
-                track_low_thresh=self.track_low_thresh,
-                new_track_thresh=self.new_track_thresh,
-                track_buffer=self.track_buffer,
-                match_thresh=0.8,
-            )
-            self._tracker = BYTETracker(args, frame_rate=30)
-            self._use_ultralytics_bytetrack = True
-            log.info("ByteTracker initialised (Ultralytics BYTETracker)")
-        except (ImportError, Exception) as e:
-            log.warning("Ultralytics BYTETracker unavailable (%s); falling back to simple IoU tracker.", e)
-            self._tracker = _SimpleIoUTracker(iou_threshold=0.3, max_age=self.track_buffer)
-            self._use_ultralytics_bytetrack = False
+        # Unified mode: YOLODetector.track() handles tracking; this becomes a no-op.
+        # Legacy fallback mode: _SimpleIoUTracker is used when called via update().
+        self._fallback = _SimpleIoUTracker(
+            iou_threshold=0.3,
+            max_age=track_buffer,
+        )
+
+        # Tracking state for validation logging
+        self._frames_processed = 0
+        self._prev_track_ids: set[int] = set()
+        self._stable_confirmed = False
+
+        log.info(
+            "[TRACKER INIT] ByteTracker constructed "
+            "(unified mode: tracking handled by YOLODetector.track). "
+            "Fallback: _SimpleIoUTracker available if needed."
+        )
+
+    def passthrough(self, observations: List[TrackObservation]) -> List[TrackObservation]:
+        """
+        In unified mode (YOLODetector.track), tracking is already done.
+        This method validates and logs state, then returns observations as-is.
+        """
+        self._log_frame_state(observations)
+        return observations
 
     def update(
         self,
@@ -65,54 +107,25 @@ class ByteTracker:
         frame: np.ndarray,
     ) -> List[TrackObservation]:
         """
-        Feed detections for one frame, get back track observations.
-        frame is passed for re-identification feature extraction (ByteTrack uses appearance).
+        Legacy fallback interface: convert Detections via _SimpleIoUTracker.
+
+        This is called only when the pipeline uses detect-only mode (not
+        YOLODetector.track).  Logs explicitly that ByteTrack is NOT active.
         """
-        if not detections:
-            if self._use_ultralytics_bytetrack:
-                self._tracker.update(np.empty((0, 6)), frame)
-            else:
-                self._tracker.update([])
-            return []
+        if self._frames_processed == 0:
+            log.warning(
+                "[TRACKER FALLBACK] tracker.update() called with Detection list. "
+                "This means YOLODetector.track() is not being used. "
+                "ACTIVE TRACKER: SimpleIoUTracker (NOT ByteTrack). "
+                "Track quality will be degraded."
+            )
 
-        if self._use_ultralytics_bytetrack:
-            return self._update_bytetrack(detections, frame)
-        else:
-            return self._update_simple(detections)
-
-    def _update_bytetrack(self, detections: List[Detection], frame: np.ndarray) -> List[TrackObservation]:
-        # Format: [x1, y1, x2, y2, conf, cls_id]
-        dets_np = np.array([
-            [d.x1, d.y1, d.x2, d.y2, d.confidence, d.class_id]
-            for d in detections
-        ], dtype=np.float32)
-
-        tracks = self._tracker.update(dets_np, frame)
-        observations: List[TrackObservation] = []
-
-        for t in tracks:
-            # Ultralytics track format: [x1, y1, x2, y2, track_id, conf, cls_id, ...]
-            x1, y1, x2, y2 = float(t[0]), float(t[1]), float(t[2]), float(t[3])
-            tid = int(t[4])
-            conf = float(t[5]) if len(t) > 5 else 0.5
-            cls_id = int(t[6]) if len(t) > 6 else 0
-
-            # Find best matching detection for metadata
-            best_det = _match_detection(detections, x1, y1, x2, y2)
-
-            observations.append(TrackObservation(
-                frame_id=detections[0].frame_id,
-                timestamp=detections[0].timestamp,
-                track_id=tid,
-                class_id=cls_id,
-                class_name=best_det.class_name if best_det else str(cls_id),
-                confidence=conf,
-                x1=x1, y1=y1, x2=x2, y2=y2,
-            ))
+        observations = self._update_simple(detections)
+        self._log_frame_state(observations)
         return observations
 
     def _update_simple(self, detections: List[Detection]) -> List[TrackObservation]:
-        tracks = self._tracker.update(detections)
+        tracks = self._fallback.update(detections)
         observations: List[TrackObservation] = []
         for tid, det in tracks:
             observations.append(TrackObservation(
@@ -126,42 +139,47 @@ class ByteTracker:
             ))
         return observations
 
+    def _log_frame_state(self, observations: List[TrackObservation]) -> None:
+        self._frames_processed += 1
+        current_ids = {o.track_id for o in observations}
+
+        if self._frames_processed == 1:
+            log.info(
+                "[TRACKER READY] First frame processed. "
+                "Track IDs this frame: %s  (count=%d)",
+                sorted(current_ids), len(current_ids),
+            )
+
+        elif self._frames_processed == 2 and not self._stable_confirmed:
+            persisted = current_ids & self._prev_track_ids
+            if persisted:
+                self._stable_confirmed = True
+                log.info(
+                    "[TRACKER STABLE] Track IDs persisted across frames 1→2: %s",
+                    sorted(persisted),
+                )
+            else:
+                log.warning(
+                    "[TRACKER STABLE?] No track IDs persisted from frame 1 to frame 2. "
+                    "Possible tracker re-initialisation or all tracks are new. "
+                    "IDs frame1=%s  IDs frame2=%s",
+                    sorted(self._prev_track_ids), sorted(current_ids),
+                )
+
+        self._prev_track_ids = current_ids
+
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Helpers
+# Fallback tracker
 # ──────────────────────────────────────────────────────────────────────────────
-
-def _match_detection(detections: List[Detection], x1, y1, x2, y2) -> Detection | None:
-    """Return detection with highest IoU to the given box."""
-    best, best_iou = None, 0.0
-    for d in detections:
-        iou = _iou(d.x1, d.y1, d.x2, d.y2, x1, y1, x2, y2)
-        if iou > best_iou:
-            best_iou, best = iou, d
-    return best
-
-
-def _iou(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) -> float:
-    ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
-    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
-    if inter == 0:
-        return 0.0
-    union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
-    return inter / union if union > 0 else 0.0
-
-
-class _TrackerArgs:
-    """Minimal namespace to satisfy Ultralytics BYTETracker constructor."""
-    def __init__(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-
 
 class _SimpleIoUTracker:
     """
-    Dead-simple IoU-based tracker as fallback when BYTETracker is unavailable.
-    Not production quality but sufficient for validation.
+    Dead-simple IoU-based tracker.
+
+    Used ONLY when YOLODetector.track() is unavailable.
+    Never claims to be ByteTrack.  Not suitable for production-quality
+    identity persistence; use only for debugging or CI dry-runs.
     """
 
     def __init__(self, iou_threshold: float = 0.3, max_age: int = 30):
@@ -177,21 +195,20 @@ class _SimpleIoUTracker:
         for tid in to_delete:
             del self._tracks[tid]
 
-        # Increment ages
         for t in self._tracks.values():
             t["age"] += 1
 
-        assigned: dict[int, Detection] = {}  # tid -> det
+        assigned: dict[int, Detection] = {}
         used_dets: set[int] = set()
 
-        # Match detections to existing tracks by IoU
         for tid, t in self._tracks.items():
             best_iou, best_idx = 0.0, -1
             last = t["det"]
             for i, d in enumerate(detections):
                 if i in used_dets:
                     continue
-                iou = _iou(last.x1, last.y1, last.x2, last.y2, d.x1, d.y1, d.x2, d.y2)
+                iou = _iou(last.x1, last.y1, last.x2, last.y2,
+                           d.x1, d.y1, d.x2, d.y2)
                 if iou > best_iou:
                     best_iou, best_idx = iou, i
             if best_idx >= 0 and best_iou >= self.iou_threshold:
@@ -199,7 +216,6 @@ class _SimpleIoUTracker:
                 used_dets.add(best_idx)
                 self._tracks[tid] = {"det": detections[best_idx], "age": 0}
 
-        # New tracks for unmatched detections
         for i, d in enumerate(detections):
             if i not in used_dets:
                 tid = self._next_id
@@ -208,3 +224,27 @@ class _SimpleIoUTracker:
                 assigned[tid] = d
 
         return list(assigned.items())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Geometry helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _iou(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2) -> float:
+    ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
+    inter = max(0.0, ix2 - ix1) * max(0.0, iy2 - iy1)
+    if inter == 0:
+        return 0.0
+    union = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _match_detection(detections: List[Detection], x1, y1, x2, y2) -> Detection | None:
+    """Return detection with highest IoU to the given box."""
+    best, best_iou = None, 0.0
+    for d in detections:
+        iou = _iou(d.x1, d.y1, d.x2, d.y2, x1, y1, x2, y2)
+        if iou > best_iou:
+            best_iou, best = iou, d
+    return best

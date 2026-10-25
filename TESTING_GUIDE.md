@@ -79,7 +79,31 @@ python scripts/dry_run.py --frames 150 --tracks 6
 
 ---
 
-### Step 1.3 — Verify Fail-Fast CUDA Protection Locally
+### Step 1.3 — Run Agent37 AI Safety Reasoning Layer
+Validate the Agent37 reasoning layer against deterministic dummy risk output or pipeline CSVs:
+
+```powershell
+# 1. Run all Agent37 unit tests (9 tests)
+python -m pytest tests/test_agent37.py -v
+
+# 2. Run Agent37 demonstration on dummy risk output
+python scripts/demo_agent37.py --input data/dummy_risk_output.json
+
+# 3. Run Agent37 directly against pipeline dry-run CSV outputs
+python scripts/demo_agent37.py --events-csv outputs/dry_run/events/conflict_events.csv --hotspots-csv outputs/dry_run/reports/hotspot_summary.csv
+```
+
+**What this exercises:**
+- Pydantic v2 data contracts (`RiskAnalysisInput` and `AgentAnalysisOutput`)
+- Authoritative ML risk score preservation (verifies ML scores are unaltered)
+- Strict evidence grounding (every finding, pattern, hotspot, and recommendation cites valid event IDs)
+- Cautious assessment language verification
+- Honest uncertainty and limitation statements
+- Machine-readable structured output export to `outputs/reports/agent37_safety_intelligence.json`
+
+---
+
+### Step 1.4 — Verify Fail-Fast CUDA Protection Locally
 Confirm that the execution runner enforces the GPU constraint and refuses accidental CPU execution:
 
 ```powershell

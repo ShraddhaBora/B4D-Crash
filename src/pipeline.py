@@ -47,7 +47,19 @@ class Pipeline:
         self._lazy_init()
 
     def _lazy_init(self):
-        """Imports and initialises heavyweight components lazily (for Kaggle compat)."""
+        """
+        Initialise heavyweight components lazily (Kaggle / Nodus compat).
+
+        Architecture: Detection + ByteTrack tracking are unified in
+        YOLODetector.track(persist=True, tracker='bytetrack.yaml').
+        This avoids calling the unstable internal BYTETracker.update() API
+        that broke in Ultralytics >= 8.2.
+
+        ByteTracker is still constructed for its validation-logging role
+        (TRACKER INIT / READY / STABLE log lines), but it no longer owns
+        tracker state.  Tracking state is maintained inside the YOLO model
+        via persist=True.
+        """
         det_cfg = self.cfg["detector"]
         trk_cfg = self.cfg["tracker"]
 
@@ -59,7 +71,10 @@ class Pipeline:
             confidence=det_cfg["confidence"],
             iou=det_cfg["iou"],
             class_ids=det_cfg.get("classes"),
+            tracker_cfg="bytetrack.yaml",
         )
+        # ByteTracker in passthrough/logging mode only — does NOT call
+        # BYTETracker.update(numpy_array) which broke in Ultralytics >= 8.2.
         self.tracker = ByteTracker(
             track_high_thresh=trk_cfg["track_high_thresh"],
             track_low_thresh=trk_cfg["track_low_thresh"],
@@ -95,14 +110,20 @@ class Pipeline:
             resize_width=vid_cfg.get("resize_width", 0),
         )
 
-        # ── Phase 2+3: Detection + Tracking ─────────────────────────────────
+        # ── Phase 2+3: Detection + Tracking (unified via YOLO.track) ──────────
+        # model.track(persist=True, tracker='bytetrack.yaml') performs both
+        # YOLO detection and ByteTrack ID assignment in a single forward pass.
+        # This avoids the internal BYTETracker.update(numpy_array) API that
+        # broke in Ultralytics >= 8.2 (AttributeError: ndarray has no .conf).
         all_detections: List[Detection] = []
         all_observations: List[TrackObservation] = []
         frames_processed = 0
 
         for frame, frame_idx, ts, fps in reader:
-            detections = self.detector.detect(frame, frame_idx, ts)
-            observations = self.tracker.update(detections, frame)
+            # Returns (List[Detection], List[TrackObservation]) in one call
+            detections, observations = self.detector.track(frame, frame_idx, ts)
+            # tracker.passthrough() validates state and logs READY/STABLE
+            observations = self.tracker.passthrough(observations)
             all_detections.extend(detections)
             all_observations.extend(observations)
             frames_processed += 1

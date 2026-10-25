@@ -84,16 +84,19 @@ print(f"\nEnvironment: {'Kaggle' if IS_KAGGLE else 'Colab' if IS_COLAB else 'Nod
 # %%
 def install_deps():
     """Install pipeline dependencies on the compute node."""
-    # PyTorch with CUDA (adjust cu121 for your CUDA version)
-    cuda_tag = "cu121"
+    # PyTorch with CUDA — cu128 matches Kaggle Tesla T4 environment (CUDA 12.8)
+    # Adjust if running on a different CUDA version (cu121, cu118, etc.)
+    cuda_tag = "cu128"
     torch_cmd = [
         sys.executable, "-m", "pip", "install", "-q",
         "torch", "torchvision",
         "--index-url", f"https://download.pytorch.org/whl/{cuda_tag}",
     ]
-    # Core deps
+    # Core deps — lap MUST be installed before ultralytics to prevent
+    # Ultralytics runtime AutoUpdate which requires a kernel restart to take effect.
     core_cmd = [
         sys.executable, "-m", "pip", "install", "-q",
+        "lap>=0.5.12",            # ByteTrack linear assignment (install first!)
         "ultralytics>=8.2",
         "opencv-python-headless>=4.9",
         "scipy>=1.12", "pandas>=2.2", "PyYAML>=6.0",
@@ -101,9 +104,9 @@ def install_deps():
         "matplotlib>=3.8", "seaborn>=0.13",
     ]
 
-    print("Installing PyTorch + CUDA...")
+    print("Installing PyTorch + CUDA (cu128)...")
     subprocess.run(torch_cmd, check=False)
-    print("Installing core dependencies...")
+    print("Installing core dependencies (lap first, then ultralytics)...")
     subprocess.run(core_cmd, check=True)
     print("✓ Dependencies installed.")
 
@@ -169,15 +172,64 @@ def download_kaggle_dataset(dataset_slug: str, dest: str = "data/raw"):
 # Example (uncomment when running on Kaggle):
 # download_kaggle_dataset("some-user/intersection-traffic-video", "data/raw")
 
-# ── Manual video path (set this for Nodus) ────────────────────────────────────
-VIDEO_PATH = "data/samples/sample_traffic.mp4"  # set to actual path on Nodus
+# ── Dataset / Video path resolution ─────────────────────────────────────────
+# The Kaggle input dataset is mounted under /kaggle/input/, NOT inside the repo.
+# The repo lives at REPO_ROOT (e.g. /kaggle/working/B4D-Crash/).
+# Do NOT copy large dataset files into the repo directory.
+#
+# Priority order for VIDEO_PATH:
+#   1. Environment variable BTC_VIDEO_PATH (set in notebook cell or shell)
+#   2. Known Kaggle dataset mount paths (probed automatically)
+#   3. Repo-relative test sample (for local dev/dry-run only)
 
-# Verify video exists
-if not Path(VIDEO_PATH).exists():
-    print(f"[WARN] Video not found at {VIDEO_PATH}")
-    print("  Set VIDEO_PATH to an actual video file before running the pipeline.")
+def _find_kaggle_video() -> str | None:
+    """
+    Probe known Kaggle dataset mount paths for a video file.
+    Returns the first found path, or None.
+    """
+    # Add more candidate paths as datasets are added to the notebook
+    candidates = [
+        # B4D Crash dataset — mounted by Kaggle under this path:
+        Path("/kaggle/input/datasets/niiimboo/b4d-crash-dataset"),
+        Path("/kaggle/input/b4d-crash-dataset"),
+        Path("/kaggle/input/b4d-crash"),
+        Path("/kaggle/input"),  # fallback: scan all inputs
+    ]
+    video_extensions = {".mp4", ".avi", ".mov", ".mkv", ".webm"}
+    for candidate in candidates:
+        if candidate.exists():
+            for f in sorted(candidate.rglob("*")):
+                if f.suffix.lower() in video_extensions and f.is_file():
+                    print(f"[AUTO-DETECT] Found video: {f}")
+                    return str(f)
+    return None
+
+
+# Resolve VIDEO_PATH with explicit priority
+if "BTC_VIDEO_PATH" in os.environ:
+    VIDEO_PATH = os.environ["BTC_VIDEO_PATH"]
+    print(f"[OK] VIDEO_PATH from environment: {VIDEO_PATH}")
+elif IS_KAGGLE:
+    _detected = _find_kaggle_video()
+    if _detected:
+        VIDEO_PATH = _detected
+    else:
+        VIDEO_PATH = ""  # must be set manually
+        print(
+            "[WARN] No video found under /kaggle/input/.\n"
+            "  Add the B4D-Crash dataset to your Kaggle notebook and re-run, or:\n"
+            "  Set VIDEO_PATH manually:  VIDEO_PATH = '/kaggle/input/.../video.mp4'"
+        )
 else:
-    print(f"[OK] Video found: {VIDEO_PATH}")
+    # Local dev / Nodus — set this path manually
+    VIDEO_PATH = "data/samples/sample_traffic.mp4"
+
+if VIDEO_PATH and Path(VIDEO_PATH).exists():
+    print(f"[OK] Video confirmed: {VIDEO_PATH}")
+elif VIDEO_PATH:
+    print(f"[WARN] VIDEO_PATH set but file not found: {VIDEO_PATH}")
+    print("  Set VIDEO_PATH to an actual video file before running the pipeline.")
+
 
 
 # %% [markdown]

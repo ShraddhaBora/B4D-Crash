@@ -151,9 +151,11 @@ def run_dry_run(n_frames: int = 150, n_tracks: int = 6,
     print("Before the Crash — Pipeline Dry Run")
     print("=" * 60)
 
-    # Config
+    # Config — resolve relative to project root, NOT to the CWD.
+    # On Kaggle the CWD is /kaggle/working/ but the config lives inside the repo.
+    _cfg_path = str(_ROOT / "config.yaml")
     from src.config_loader import load_config, ensure_output_dirs
-    cfg = load_config("config.yaml")
+    cfg = load_config(_cfg_path)
     cfg["video"]["output_dir"] = output_dir
     ensure_output_dirs(cfg)
     Path(output_dir).mkdir(parents=True, exist_ok=True)

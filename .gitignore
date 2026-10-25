@@ -45,3 +45,14 @@ experiments/logs/*.log
 
 # Kaggle API credentials
 kaggle.json
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Data test videos
+data/test/*.mp4
+data/test/*.avi
+data/test/*.mov
+

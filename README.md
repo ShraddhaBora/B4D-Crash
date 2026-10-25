@@ -31,6 +31,10 @@ Event Merging
 Evidence Clips + Annotated Video
     ↓
 Hotspot Aggregation + Ranking
+    ↓
+Agent37 AI Reasoning Layer (HuggingFace LLM / Deterministic Rule Engine)
+    ↓
+Structured Safety Intelligence (Findings, Patterns, Prioritized Hotspots, Recommendations)
 ```
 
 ---
@@ -41,9 +45,11 @@ Hotspot Aggregation + Ranking
 # 1. Install (pure-CPU for local dev)
 pip install -r requirements.txt
 
-# 2. Run unit tests
-cd before-the-crash
+# 2. Run unit tests (35 tests covering perception, safety, and Agent37 reasoning)
 python -m pytest tests/ -v
+
+# 3. Run Agent37 demo runner on realistic dummy risk output
+python scripts/demo_agent37.py --input data/dummy_risk_output.json
 ```
 
 ---
@@ -119,8 +125,15 @@ before-the-crash/
 │   │   └── ranking.py
 │   └── evaluation/
 │       └── evaluator.py           ← TP/FP/FN / P / R / F1
+├── agent/                         ← Agent37 safety reasoning layer
+│   ├── agent37.py                 ← Agent37 core (HF Inference API + fallback)
+│   ├── schemas.py                 ← Pydantic v2 input/output data contracts
+│   ├── recommendation_rules.py    ← Deterministic evidence-grounded rule engine
+│   ├── risk_adapter.py            ← Adapter: dummy JSON or pipeline CSVs → RiskAnalysisInput
+│   └── prompts.py                 ← System prompts & JSON extraction utilities
 ├── scripts/
 │   ├── run_pipeline.py            ← CLI entry point
+│   ├── demo_agent37.py            ← Agent37 demo runner & verification
 │   ├── nodus_kaggle_runner.py     ← Nodus/Kaggle execution notebook
 │   └── agent37_analyze.py         ← Agent37 experiment analysis
 ├── experiments/
@@ -129,7 +142,9 @@ before-the-crash/
 │       ├── exp_002_moderate.yaml
 │       └── exp_003_sensitive.yaml
 └── tests/
-    └── test_pipeline.py           ← 15 deterministic unit tests
+    ├── test_pipeline.py           ← 15 deterministic unit tests
+    ├── test_audit_fixes.py        ← 11 audit validation tests
+    └── test_agent37.py            ← 9 Agent37 reasoning & schema tests
 ```
 
 ---
